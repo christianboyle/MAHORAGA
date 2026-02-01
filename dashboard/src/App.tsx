@@ -173,7 +173,7 @@ export default function App() {
         clearInterval(timeInterval)
       }
     }
-  }, [portfolioHistory.length, setupChecked, showSetup])
+  }, [setupChecked, showSetup])
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -191,26 +191,7 @@ export default function App() {
     }
   }
 
-  if (showSetup) {
-    return <SetupWizard onComplete={() => setShowSetup(false)} />
-  }
-
-  if (error && !status) {
-    return (
-      <div className="min-h-screen bg-hud-bg flex items-center justify-center p-6">
-        <Panel title="CONNECTION ERROR" className="max-w-md w-full">
-          <div className="text-center py-8">
-            <div className="text-hud-error text-2xl mb-4">OFFLINE</div>
-            <p className="text-hud-text-dim text-sm mb-6">{error}</p>
-            <p className="text-hud-text-dim text-xs">
-              Start the agent: <code className="text-hud-primary">node agent-v1.mjs</code>
-            </p>
-          </div>
-        </Panel>
-      </div>
-    )
-  }
-
+  // Derived state (must stay above early returns per React hooks rules)
   const account = status?.account
   const positions = status?.positions || []
   const signals = status?.signals || []
@@ -224,6 +205,9 @@ export default function App() {
   const totalPl = account ? account.equity - startingEquity : 0
   const realizedPl = totalPl - unrealizedPl
   const totalPlPct = account ? (totalPl / startingEquity) * 100 : 0
+
+  // Color palette for position lines (distinct colors for each stock)
+  const positionColors = ['cyan', 'purple', 'yellow', 'blue', 'green'] as const
 
   // Generate mock price histories for positions (stable per session via useMemo)
   const positionPriceHistories = useMemo(() => {
@@ -245,9 +229,6 @@ export default function App() {
     )
   }, [portfolioHistory])
 
-  // Color palette for position lines (distinct colors for each stock)
-  const positionColors = ['cyan', 'purple', 'yellow', 'blue', 'green'] as const
-
   // Normalize position price histories to % change for stacked comparison view
   const normalizedPositionSeries = useMemo(() => {
     return positions.map((pos, idx) => {
@@ -263,6 +244,27 @@ export default function App() {
       }
     }).filter(Boolean) as { label: string; data: number[]; variant: typeof positionColors[number] }[]
   }, [positions, positionPriceHistories])
+
+  // Early returns (after all hooks)
+  if (showSetup) {
+    return <SetupWizard onComplete={() => setShowSetup(false)} />
+  }
+
+  if (error && !status) {
+    return (
+      <div className="min-h-screen bg-hud-bg flex items-center justify-center p-6">
+        <Panel title="CONNECTION ERROR" className="max-w-md w-full">
+          <div className="text-center py-8">
+            <div className="text-hud-error text-2xl mb-4">OFFLINE</div>
+            <p className="text-hud-text-dim text-sm mb-6">{error}</p>
+            <p className="text-hud-text-dim text-xs">
+              Start the agent: <code className="text-hud-primary">node agent-v1.mjs</code>
+            </p>
+          </div>
+        </Panel>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-hud-bg">

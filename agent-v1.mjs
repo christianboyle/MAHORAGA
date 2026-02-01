@@ -357,15 +357,18 @@ class SimpleOrchestrator {
   }
 
   async connect() {
-    const transport = new SSEClientTransport(new URL(this.config.mcp_url));
-    this.mcp = new Client({ name: "mahoraga-v1", version: "1.0" }, { capabilities: {} });
+    const url = this.config.mcp_url;
+    console.log(`Connecting to MCP server at ${url}...`);
     
     try {
+      const transport = new SSEClientTransport(new URL(url));
+      this.mcp = new Client({ name: "mahoraga-v1", version: "1.0" }, { capabilities: {} });
       await this.mcp.connect(transport);
       this.executor = new TradingExecutor(this.mcp, this.logger, this.config);
-      this.logger.log("System", "connected", { url: this.config.mcp_url });
+      this.logger.log("System", "connected", { url });
       return true;
     } catch (err) {
+      console.error("Connection error:", err);
       this.logger.log("System", "connection_failed", { error: err.message });
       return false;
     }
