@@ -57,7 +57,25 @@ function getAgentColor(agent: string): string {
 }
 
 function isCryptoSymbol(symbol: string, cryptoSymbols: string[] = []): boolean {
-  return cryptoSymbols.includes(symbol) || symbol.includes('/USD') || symbol.includes('BTC') || symbol.includes('ETH') || symbol.includes('SOL')
+  const upperSymbol = symbol.toUpperCase()
+  const matchesConfig = cryptoSymbols.some(cs => {
+    const baseSymbol = cs.split('/')[0].toUpperCase()
+    return upperSymbol === cs.toUpperCase() || upperSymbol.startsWith(baseSymbol)
+  })
+  return matchesConfig || upperSymbol.includes('/USD') || upperSymbol.startsWith('BTC') || upperSymbol.startsWith('ETH') || upperSymbol.startsWith('SOL')
+}
+
+function formatCryptoSymbol(symbol: string, cryptoSymbols: string[] = []): string {
+  if (symbol.includes('/')) return symbol
+  const upperSymbol = symbol.toUpperCase()
+  for (const cs of cryptoSymbols) {
+    const baseSymbol = cs.split('/')[0].toUpperCase()
+    if (upperSymbol.startsWith(baseSymbol)) {
+      const quote = upperSymbol.slice(baseSymbol.length)
+      if (quote.length >= 3) return `${baseSymbol}/${quote}`
+    }
+  }
+  return symbol
 }
 
 function getVerdictColor(verdict: string): string {
@@ -461,7 +479,9 @@ export default function App() {
                                   {isCryptoSymbol(pos.symbol, config?.crypto_symbols) && (
                                     <span className="text-hud-warning mr-1">₿</span>
                                   )}
-                                  {pos.symbol}
+                                  {isCryptoSymbol(pos.symbol, config?.crypto_symbols) 
+                                    ? formatCryptoSymbol(pos.symbol, config?.crypto_symbols)
+                                    : pos.symbol}
                                 </span>
                               </Tooltip>
                             </td>
