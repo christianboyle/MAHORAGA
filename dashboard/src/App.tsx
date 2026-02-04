@@ -59,10 +59,13 @@ function getAgentColor(agent: string): string {
 function isCryptoSymbol(symbol: string, cryptoSymbols: string[] = []): boolean {
   const upperSymbol = symbol.toUpperCase()
   const matchesConfig = cryptoSymbols.some(cs => {
-    const baseSymbol = cs.split('/')[0].toUpperCase()
-    return upperSymbol === cs.toUpperCase() || upperSymbol.startsWith(baseSymbol)
+    const normalizedConfig = cs.toUpperCase()
+    if (upperSymbol === normalizedConfig) return true
+    const baseSymbol = normalizedConfig.split('/')[0]
+    const quoteSymbol = normalizedConfig.split('/')[1] || 'USD'
+    return upperSymbol === `${baseSymbol}${quoteSymbol}`
   })
-  return matchesConfig || upperSymbol.includes('/USD') || upperSymbol.startsWith('BTC') || upperSymbol.startsWith('ETH') || upperSymbol.startsWith('SOL')
+  return matchesConfig || /^[A-Z]{2,5}\/(USD|USDT|USDC)$/.test(upperSymbol)
 }
 
 function formatCryptoSymbol(symbol: string, cryptoSymbols: string[] = []): string {
@@ -75,6 +78,8 @@ function formatCryptoSymbol(symbol: string, cryptoSymbols: string[] = []): strin
       if (quote.length >= 3) return `${baseSymbol}/${quote}`
     }
   }
+  const match = upperSymbol.match(/^([A-Z]{2,5})(USD|USDT|USDC)$/)
+  if (match) return `${match[1]}/${match[2]}`
   return symbol
 }
 
