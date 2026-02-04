@@ -79,7 +79,6 @@ function formatCryptoSymbol(symbol: string, cryptoSymbols: string[] = []): strin
         return `${baseSymbol}/${quote}`
       }
     }
-    }
   }
   const match = upperSymbol.match(/^([A-Z]{2,5})(USD|USDT|USDC)$/)
   if (match) return `${match[1]}/${match[2]}`
