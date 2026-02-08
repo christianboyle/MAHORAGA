@@ -220,7 +220,7 @@ interface AgentState {
   lastKnownNextOpenMs: number | null;
   premarketPlan: PremarketPlan | null;
   lastPremarketPlanDayEt: string | null;
-  lastClockIsOpen: boolean;
+  lastClockIsOpen: boolean | null;
   enabled: boolean;
 }
 
@@ -328,7 +328,7 @@ const DEFAULT_STATE: AgentState = {
   lastKnownNextOpenMs: null,
   premarketPlan: null,
   lastPremarketPlanDayEt: null,
-  lastClockIsOpen: false,
+  lastClockIsOpen: null,
   enabled: false,
 };
 
@@ -972,10 +972,12 @@ export class MahoragaHarness extends DurableObject<Env> {
           openWindowMs >= 0 &&
           clockNowMs >= lastKnownOpenMs &&
           clockNowMs - lastKnownOpenMs <= openWindowMs;
-        const marketJustOpened = clock.is_open && !this.state.lastClockIsOpen;
+        const clockStateUnknown = this.state.lastClockIsOpen == null;
+        const marketJustOpened = this.state.lastClockIsOpen === false && clock.is_open;
 
         const shouldExecutePremarketPlan =
-          !!this.state.premarketPlan && ((hasOpenMs && withinOpenWindow) || (!hasOpenMs && marketJustOpened));
+          !!this.state.premarketPlan &&
+          ((hasOpenMs && withinOpenWindow) || (!hasOpenMs && marketJustOpened) || (!hasOpenMs && clockStateUnknown));
         if (shouldExecutePremarketPlan) {
           await this.executePremarketPlan();
         }
