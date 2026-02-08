@@ -940,7 +940,7 @@ export class MahoragaHarness extends DurableObject<Env> {
 
         if (shouldPlan) {
           await this.runPreMarketAnalysis();
-          this.state.lastPremarketPlanDayEt = etDay;
+          if (this.state.premarketPlan) this.state.lastPremarketPlanDayEt = etDay;
         }
       }
 
