@@ -220,6 +220,10 @@ interface AgentState {
   lastKnownNextOpenMs: number | null;
   premarketPlan: PremarketPlan | null;
   lastPremarketPlanDayEt: string | null;
+  // Tracks the last known Alpaca `clock.is_open` value.
+  // `null` means "unknown" (typically right after a deploy/migration where older stored state
+  // doesn't include this field yet). We treat "unknown" specially to avoid a false
+  // "market just opened" edge on the first alarm tick after restart.
   lastClockIsOpen: boolean | null;
   enabled: boolean;
 }
@@ -975,6 +979,13 @@ export class MahoragaHarness extends DurableObject<Env> {
         const clockStateUnknown = this.state.lastClockIsOpen == null;
         const marketJustOpened = this.state.lastClockIsOpen === false && clock.is_open;
 
+        // Primary behavior: execute the premarket plan within a configurable window after open,
+        // using Alpaca's `next_open` timestamp captured during pre-market.
+        //
+        // Fallback behavior: if we don't have an open timestamp (e.g., first tick after a deploy/migration),
+        // avoid using a potentially-wrong edge detector. Instead:
+        // - execute on the true "closed -> open" edge when we have prior state, or
+        // - if the prior state is unknown, allow a single attempt and rely on plan staleness to prevent late execution.
         const shouldExecutePremarketPlan =
           !!this.state.premarketPlan &&
           ((hasOpenMs && withinOpenWindow) || (!hasOpenMs && marketJustOpened) || (!hasOpenMs && clockStateUnknown));
