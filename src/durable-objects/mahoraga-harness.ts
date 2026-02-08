@@ -1312,10 +1312,11 @@ export class MahoragaHarness extends DurableObject<Env> {
       if (!sig.symbol) continue;
       const volume = Number.isFinite(sig.volume) && sig.volume > 0 ? sig.volume : 1;
 
-      if (!aggregated.has(sig.symbol)) {
-        aggregated.set(sig.symbol, { volume: 0, sentimentNumerator: 0, sources: new Set() });
+      let entry = aggregated.get(sig.symbol);
+      if (!entry) {
+        entry = { volume: 0, sentimentNumerator: 0, sources: new Set() };
+        aggregated.set(sig.symbol, entry);
       }
-      const entry = aggregated.get(sig.symbol)!;
       entry.volume += volume;
       entry.sentimentNumerator += (Number.isFinite(sig.sentiment) ? sig.sentiment : 0) * volume;
       entry.sources.add(sig.source_detail || sig.source);
@@ -1333,9 +1334,9 @@ export class MahoragaHarness extends DurableObject<Env> {
   }
 
   private pruneSocialHistoryInPlace(history: SocialHistoryEntry[], cutoffMs: number): void {
-    if (history.length === 0) return;
     let pruneCount = 0;
-    while (pruneCount < history.length && history[pruneCount]!.timestamp < cutoffMs) {
+    for (const entry of history) {
+      if (entry.timestamp >= cutoffMs) break;
       pruneCount++;
     }
     if (pruneCount > 0) {
