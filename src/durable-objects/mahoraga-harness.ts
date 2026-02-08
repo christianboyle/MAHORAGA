@@ -1361,6 +1361,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       .slice(0, MAX_SIGNALS);
 
     this.state.signalCache = freshSignals;
+    this.updateSocialHistoryFromSignals(freshSignals, now);
 
     this.log("System", "data_gathered", {
       stocktwits: stocktwitsSignals.length,
@@ -1369,6 +1370,68 @@ export class MahoragaHarness extends DurableObject<Env> {
       sec: secSignals.length,
       total: this.state.signalCache.length,
     });
+  }
+
+  private buildSocialSnapshot(
+    signals: Signal[]
+  ): Map<
+    string,
+    {
+      volume: number;
+      sentiment: number;
+      sources: Set<string>;
+    }
+  > {
+    const aggregated = new Map<string, { volume: number; sentimentNumerator: number; sources: Set<string> }>();
+
+    for (const sig of signals) {
+      if (!sig.symbol) continue;
+      const volume = Number.isFinite(sig.volume) && sig.volume > 0 ? sig.volume : 1;
+
+      if (!aggregated.has(sig.symbol)) {
+        aggregated.set(sig.symbol, { volume: 0, sentimentNumerator: 0, sources: new Set() });
+      }
+      const entry = aggregated.get(sig.symbol)!;
+      entry.volume += volume;
+      entry.sentimentNumerator += (Number.isFinite(sig.sentiment) ? sig.sentiment : 0) * volume;
+      entry.sources.add(sig.source_detail || sig.source);
+    }
+
+    const out = new Map<string, { volume: number; sentiment: number; sources: Set<string> }>();
+    for (const [symbol, entry] of aggregated) {
+      out.set(symbol, {
+        volume: entry.volume,
+        sentiment: entry.volume > 0 ? entry.sentimentNumerator / entry.volume : 0,
+        sources: entry.sources,
+      });
+    }
+    return out;
+  }
+
+  private updateSocialHistoryFromSignals(signals: Signal[], nowMs: number): void {
+    const SOCIAL_HISTORY_BUCKET_MS = 5 * 60 * 1000;
+    const SOCIAL_HISTORY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+    const snapshot = this.buildSocialSnapshot(signals);
+    for (const [symbol, s] of snapshot) {
+      const history = this.state.socialHistory[symbol] ?? [];
+      const last = history[history.length - 1];
+
+      if (last && nowMs - last.timestamp < SOCIAL_HISTORY_BUCKET_MS) {
+        last.timestamp = nowMs;
+        last.volume = s.volume;
+        last.sentiment = s.sentiment;
+      } else {
+        history.push({ timestamp: nowMs, volume: s.volume, sentiment: s.sentiment });
+      }
+
+      const cutoff = nowMs - SOCIAL_HISTORY_MAX_AGE_MS;
+      while (history.length > 0 && history[0]!.timestamp < cutoff) {
+        history.shift();
+      }
+
+      this.state.socialHistory[symbol] = history;
+    }
   }
 
   private async gatherStockTwits(): Promise<Signal[]> {
@@ -2695,6 +2758,7 @@ Response format:
     }
 
     const heldSymbols = new Set(positions.map((p) => p.symbol));
+    const socialSnapshot = this.buildSocialSnapshot(this.state.signalCache);
 
     // Check position exits
     for (const pos of positions) {
@@ -2716,7 +2780,8 @@ Response format:
 
       // Check staleness
       if (this.state.config.stale_position_enabled) {
-        const stalenessResult = this.analyzeStaleness(pos.symbol, pos.current_price, 0);
+        const currentSocialVolume = socialSnapshot.get(pos.symbol)?.volume ?? 0;
+        const stalenessResult = this.analyzeStaleness(pos.symbol, pos.current_price, currentSocialVolume);
         this.state.stalenessAnalysis[pos.symbol] = stalenessResult;
 
         if (stalenessResult.isStale) {
@@ -2736,6 +2801,7 @@ Response format:
         if (heldSymbols.has(research.symbol)) continue;
 
         const originalSignal = this.state.signalCache.find((s) => s.symbol === research.symbol);
+        const aggregatedSocial = socialSnapshot.get(research.symbol);
         let finalConfidence = research.confidence;
 
         if (this.isTwitterEnabled() && originalSignal) {
@@ -2772,12 +2838,14 @@ Response format:
             symbol: research.symbol,
             entry_time: Date.now(),
             entry_price: 0,
-            entry_sentiment: originalSignal?.sentiment || finalConfidence,
-            entry_social_volume: originalSignal?.volume || 0,
-            entry_sources: originalSignal?.subreddits || [originalSignal?.source || "research"],
+            entry_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? finalConfidence,
+            entry_social_volume: aggregatedSocial?.volume ?? originalSignal?.volume ?? 0,
+            entry_sources: aggregatedSocial
+              ? Array.from(aggregatedSocial.sources)
+              : originalSignal?.subreddits || [originalSignal?.source || "research"],
             entry_reason: research.reasoning,
             peak_price: 0,
-            peak_sentiment: originalSignal?.sentiment || finalConfidence,
+            peak_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? finalConfidence,
           };
         }
       }
@@ -2823,17 +2891,20 @@ Response format:
           const result = await this.executeBuy(alpaca, rec.symbol, rec.confidence, account);
           if (result) {
             const originalSignal = this.state.signalCache.find((s) => s.symbol === rec.symbol);
+            const aggregatedSocial = socialSnapshot.get(rec.symbol);
             heldSymbols.add(rec.symbol);
             this.state.positionEntries[rec.symbol] = {
               symbol: rec.symbol,
               entry_time: Date.now(),
               entry_price: 0,
-              entry_sentiment: originalSignal?.sentiment || rec.confidence,
-              entry_social_volume: originalSignal?.volume || 0,
-              entry_sources: originalSignal?.subreddits || [originalSignal?.source || "analyst"],
+              entry_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? rec.confidence,
+              entry_social_volume: aggregatedSocial?.volume ?? originalSignal?.volume ?? 0,
+              entry_sources: aggregatedSocial
+                ? Array.from(aggregatedSocial.sources)
+                : originalSignal?.subreddits || [originalSignal?.source || "analyst"],
               entry_reason: rec.reasoning,
               peak_price: 0,
-              peak_sentiment: originalSignal?.sentiment || rec.confidence,
+              peak_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? rec.confidence,
             };
           }
         }
@@ -3317,6 +3388,7 @@ Response format:
     if (!account) return;
 
     const heldSymbols = new Set(positions.map((p) => p.symbol));
+    const socialSnapshot = this.buildSocialSnapshot(this.state.signalCache);
 
     this.log("System", "executing_premarket_plan", {
       recommendations: this.state.premarketPlan.recommendations.length,
@@ -3338,16 +3410,19 @@ Response format:
           heldSymbols.add(rec.symbol);
 
           const originalSignal = this.state.signalCache.find((s) => s.symbol === rec.symbol);
+          const aggregatedSocial = socialSnapshot.get(rec.symbol);
           this.state.positionEntries[rec.symbol] = {
             symbol: rec.symbol,
             entry_time: Date.now(),
             entry_price: 0,
-            entry_sentiment: originalSignal?.sentiment || 0,
-            entry_social_volume: originalSignal?.volume || 0,
-            entry_sources: originalSignal?.subreddits || [originalSignal?.source || "premarket"],
+            entry_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? 0,
+            entry_social_volume: aggregatedSocial?.volume ?? originalSignal?.volume ?? 0,
+            entry_sources: aggregatedSocial
+              ? Array.from(aggregatedSocial.sources)
+              : originalSignal?.subreddits || [originalSignal?.source || "premarket"],
             entry_reason: rec.reasoning,
             peak_price: 0,
-            peak_sentiment: originalSignal?.sentiment || 0,
+            peak_sentiment: aggregatedSocial?.sentiment ?? originalSignal?.sentiment ?? 0,
           };
         }
       }
