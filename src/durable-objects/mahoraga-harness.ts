@@ -965,7 +965,6 @@ export class MahoragaHarness extends DurableObject<Env> {
 
       if (now - this.state.lastDataGatherRun >= this.state.config.data_poll_interval_ms) {
         await this.runDataGatherers();
-        this.state.lastDataGatherRun = now;
       }
 
 	      if (now - this.state.lastResearchRun >= RESEARCH_INTERVAL_MS) {
@@ -1390,6 +1389,7 @@ export class MahoragaHarness extends DurableObject<Env> {
       .slice(0, MAX_SIGNALS);
 
     this.state.signalCache = freshSignals;
+    this.state.lastDataGatherRun = now;
 
     this.log("System", "data_gathered", {
       stocktwits: stocktwitsSignals.length,
@@ -1436,14 +1436,11 @@ export class MahoragaHarness extends DurableObject<Env> {
   }
 
   private pruneSocialHistoryInPlace(history: SocialHistoryEntry[], cutoffMs: number): void {
-    let pruneCount = 0;
-    for (const entry of history) {
-      if (entry.timestamp >= cutoffMs) break;
-      pruneCount++;
-    }
-    if (pruneCount > 0) {
-      history.splice(0, pruneCount);
-    }
+    if (history.length === 0) return;
+
+    const pruned = history.filter((entry) => entry.timestamp >= cutoffMs);
+    pruned.sort((a, b) => a.timestamp - b.timestamp);
+    history.splice(0, history.length, ...pruned);
   }
 
   private updateSocialHistoryFromSnapshot(
@@ -1458,6 +1455,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     for (const [symbol, s] of snapshot) {
       touchedSymbols.add(symbol);
       const history = this.state.socialHistory[symbol] ?? [];
+      if (history.length > 1) history.sort((a, b) => a.timestamp - b.timestamp);
       const last = history[history.length - 1];
 
       if (last && nowMs - last.timestamp < SOCIAL_HISTORY_BUCKET_MS) {
@@ -1495,7 +1493,7 @@ export class MahoragaHarness extends DurableObject<Env> {
   private getSocialSnapshotCache(): Record<string, SocialSnapshotCacheEntry> {
     // Prefer the snapshot captured during the most recent gather run. This represents the full gathered set
     // (age-filtered, uncapped), while `signalCache` is capped and sentiment-biased for research/LLM costs.
-    if (this.state.socialSnapshotCacheUpdatedAt >= this.state.lastDataGatherRun) {
+    if (this.state.socialSnapshotCacheUpdatedAt > 0) {
       return this.state.socialSnapshotCache;
     }
 
