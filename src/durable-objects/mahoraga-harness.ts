@@ -206,6 +206,7 @@ interface AgentState {
   lastDataGatherRun: number;
   lastAnalystRun: number;
   lastResearchRun: number;
+  lastPositionResearchRun: number;
   signalResearch: Record<string, ResearchResult>;
   positionResearch: Record<string, unknown>;
   stalenessAnalysis: Record<string, unknown>;
@@ -213,6 +214,8 @@ interface AgentState {
   twitterDailyReads: number;
   twitterDailyReadReset: number;
   premarketPlan: PremarketPlan | null;
+  lastPremarketPlanDayEt: string | null;
+  lastClockIsOpen: boolean;
   enabled: boolean;
 }
 
@@ -308,6 +311,7 @@ const DEFAULT_STATE: AgentState = {
   lastDataGatherRun: 0,
   lastAnalystRun: 0,
   lastResearchRun: 0,
+  lastPositionResearchRun: 0,
   signalResearch: {},
   positionResearch: {},
   stalenessAnalysis: {},
@@ -315,6 +319,8 @@ const DEFAULT_STATE: AgentState = {
   twitterDailyReads: 0,
   twitterDailyReadReset: 0,
   premarketPlan: null,
+  lastPremarketPlanDayEt: null,
+  lastClockIsOpen: false,
   enabled: false,
 };
 
@@ -818,6 +824,7 @@ function detectSentiment(text: string): number {
 export class MahoragaHarness extends DurableObject<Env> {
   private state: AgentState = { ...DEFAULT_STATE };
   private _llm: LLMProvider | null = null;
+  private _etDayFormatter: Intl.DateTimeFormat | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -866,6 +873,27 @@ export class MahoragaHarness extends DurableObject<Env> {
     }
   }
 
+  private getEtDayString(epochMs: number): string {
+    // Cloudflare Workers typically run in UTC; explicitly use US/Eastern for market-day boundaries.
+    if (!this._etDayFormatter) {
+      try {
+        this._etDayFormatter = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "America/New_York",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        });
+      } catch {
+        this._etDayFormatter = null;
+      }
+    }
+
+    if (!this._etDayFormatter) {
+      return new Date(epochMs).toISOString().slice(0, 10);
+    }
+    return this._etDayFormatter.format(new Date(epochMs));
+  }
+
   // ============================================================================
   // [CUSTOMIZABLE] ALARM HANDLER - Main entry point for scheduled work
   // ============================================================================
@@ -884,10 +912,13 @@ export class MahoragaHarness extends DurableObject<Env> {
     const now = Date.now();
     const RESEARCH_INTERVAL_MS = 120_000;
     const POSITION_RESEARCH_INTERVAL_MS = 300_000;
+    const PREMARKET_PLAN_WINDOW_MINUTES = 5;
 
     try {
       const alpaca = createAlpacaProviders(this.env);
       const clock = await alpaca.trading.getClock();
+      const clockNowMs = Number.isFinite(new Date(clock.timestamp).getTime()) ? new Date(clock.timestamp).getTime() : now;
+      const etDay = this.getEtDayString(clockNowMs);
 
       if (now - this.state.lastDataGatherRun >= this.state.config.data_poll_interval_ms) {
         await this.runDataGatherers();
@@ -899,8 +930,18 @@ export class MahoragaHarness extends DurableObject<Env> {
         this.state.lastResearchRun = now;
       }
 
-      if (this.isPreMarketWindow() && !this.state.premarketPlan) {
-        await this.runPreMarketAnalysis();
+      if (!clock.is_open && !this.state.premarketPlan) {
+        const nextOpenMs = new Date(clock.next_open).getTime();
+        const minutesToOpen = Number.isFinite(nextOpenMs) ? (nextOpenMs - clockNowMs) / 60000 : Number.POSITIVE_INFINITY;
+        const shouldPlan =
+          minutesToOpen > 0 &&
+          minutesToOpen <= PREMARKET_PLAN_WINDOW_MINUTES &&
+          this.state.lastPremarketPlanDayEt !== etDay;
+
+        if (shouldPlan) {
+          await this.runPreMarketAnalysis();
+          this.state.lastPremarketPlanDayEt = etDay;
+        }
       }
 
       const positions = await alpaca.trading.getPositions();
@@ -910,7 +951,8 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       if (clock.is_open) {
-        if (this.isMarketJustOpened() && this.state.premarketPlan) {
+        const marketJustOpened = clock.is_open && !this.state.lastClockIsOpen;
+        if (marketJustOpened && this.state.premarketPlan) {
           await this.executePremarketPlan();
         }
 
@@ -919,12 +961,13 @@ export class MahoragaHarness extends DurableObject<Env> {
           this.state.lastAnalystRun = now;
         }
 
-        if (positions.length > 0 && now - this.state.lastResearchRun >= POSITION_RESEARCH_INTERVAL_MS) {
+        if (positions.length > 0 && now - this.state.lastPositionResearchRun >= POSITION_RESEARCH_INTERVAL_MS) {
           for (const pos of positions) {
             if (pos.asset_class !== "us_option") {
               await this.researchPosition(pos.symbol, pos);
             }
           }
+          this.state.lastPositionResearchRun = now;
         }
 
         if (this.isOptionsEnabled()) {
@@ -948,6 +991,7 @@ export class MahoragaHarness extends DurableObject<Env> {
         }
       }
 
+      this.state.lastClockIsOpen = clock.is_open;
       await this.persist();
     } catch (error) {
       this.log("System", "alarm_error", { error: String(error) });
@@ -1125,6 +1169,7 @@ export class MahoragaHarness extends DurableObject<Env> {
         costs: this.state.costTracker,
         lastAnalystRun: this.state.lastAnalystRun,
         lastResearchRun: this.state.lastResearchRun,
+        lastPositionResearchRun: this.state.lastPositionResearchRun,
         signalResearch: this.state.signalResearch,
         positionResearch: this.state.positionResearch,
         positionEntries: this.state.positionEntries,
@@ -3152,37 +3197,9 @@ Response format:
   // Runs 9:25-9:29 AM ET to prepare a trading plan before market open.
   // Executes the plan at 9:30-9:32 AM when market opens.
   //
-  // [TUNE] Change time windows in isPreMarketWindow() / isMarketJustOpened()
+  // Note: market-open and premarket detection is driven by Alpaca clock in alarm().
   // [TUNE] Plan staleness (PLAN_STALE_MS) in executePremarketPlan()
   // ============================================================================
-
-  private isPreMarketWindow(): boolean {
-    const now = new Date();
-    const hour = now.getHours();
-    const minute = now.getMinutes();
-    const day = now.getDay();
-
-    if (day >= 1 && day <= 5) {
-      if (hour === 9 && minute >= 25 && minute <= 29) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private isMarketJustOpened(): boolean {
-    const now = new Date();
-    const hour = now.getHours();
-    const minute = now.getMinutes();
-    const day = now.getDay();
-
-    if (day >= 1 && day <= 5) {
-      if (hour === 9 && minute >= 30 && minute <= 32) {
-        return true;
-      }
-    }
-    return false;
-  }
 
   private async runPreMarketAnalysis(): Promise<void> {
     const alpaca = createAlpacaProviders(this.env);
