@@ -53,6 +53,10 @@ interface AgentConfig {
   data_poll_interval_ms: number; // [TUNE] Default: 30s. Lower = more API calls
   analyst_interval_ms: number; // [TUNE] Default: 120s. How often to run trading logic
 
+  // Market-timing behavior (driven by Alpaca clock)
+  premarket_plan_window_minutes: number; // [TUNE] How many minutes before open to generate a plan (default: 5)
+  market_open_execute_window_minutes: number; // [TUNE] How many minutes after open to execute plan (default: 2)
+
   // Position limits - risk management basics
   max_position_value: number; // [TUNE] Max $ per position
   max_positions: number; // [TUNE] Max concurrent positions
@@ -213,6 +217,7 @@ interface AgentState {
   twitterConfirmations: Record<string, TwitterConfirmation>;
   twitterDailyReads: number;
   twitterDailyReadReset: number;
+  lastKnownNextOpenMs: number | null;
   premarketPlan: PremarketPlan | null;
   lastPremarketPlanDayEt: string | null;
   lastClockIsOpen: boolean;
@@ -263,6 +268,8 @@ const SOURCE_CONFIG = {
 const DEFAULT_CONFIG: AgentConfig = {
   data_poll_interval_ms: 30_000,
   analyst_interval_ms: 120_000,
+  premarket_plan_window_minutes: 5,
+  market_open_execute_window_minutes: 2,
   max_position_value: 5000,
   max_positions: 5,
   min_sentiment_score: 0.3,
@@ -318,6 +325,7 @@ const DEFAULT_STATE: AgentState = {
   twitterConfirmations: {},
   twitterDailyReads: 0,
   twitterDailyReadReset: 0,
+  lastKnownNextOpenMs: null,
   premarketPlan: null,
   lastPremarketPlanDayEt: null,
   lastClockIsOpen: false,
@@ -839,7 +847,7 @@ export class MahoragaHarness extends DurableObject<Env> {
     this.ctx.blockConcurrencyWhile(async () => {
       const stored = await this.ctx.storage.get<AgentState>("state");
       if (stored) {
-        this.state = { ...DEFAULT_STATE, ...stored };
+        this.state = { ...DEFAULT_STATE, ...stored, config: { ...DEFAULT_STATE.config, ...(stored.config || {}) } };
       }
       this.initializeLLM();
 
@@ -912,13 +920,19 @@ export class MahoragaHarness extends DurableObject<Env> {
     const now = Date.now();
     const RESEARCH_INTERVAL_MS = 120_000;
     const POSITION_RESEARCH_INTERVAL_MS = 300_000;
-    const PREMARKET_PLAN_WINDOW_MINUTES = 5;
+    const premarketPlanWindowMinutes = this.state.config.premarket_plan_window_minutes ?? 5;
+    const marketOpenExecuteWindowMinutes = this.state.config.market_open_execute_window_minutes ?? 2;
 
     try {
       const alpaca = createAlpacaProviders(this.env);
       const clock = await alpaca.trading.getClock();
       const clockNowMs = Number.isFinite(new Date(clock.timestamp).getTime()) ? new Date(clock.timestamp).getTime() : now;
       const etDay = this.getEtDayString(clockNowMs);
+      const nextOpenMs = new Date(clock.next_open).getTime();
+
+      if (!clock.is_open && Number.isFinite(nextOpenMs)) {
+        this.state.lastKnownNextOpenMs = nextOpenMs;
+      }
 
       if (now - this.state.lastDataGatherRun >= this.state.config.data_poll_interval_ms) {
         await this.runDataGatherers();
@@ -931,11 +945,10 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       if (!clock.is_open && !this.state.premarketPlan) {
-        const nextOpenMs = new Date(clock.next_open).getTime();
         const minutesToOpen = Number.isFinite(nextOpenMs) ? (nextOpenMs - clockNowMs) / 60000 : Number.POSITIVE_INFINITY;
         const shouldPlan =
           minutesToOpen > 0 &&
-          minutesToOpen <= PREMARKET_PLAN_WINDOW_MINUTES &&
+          minutesToOpen <= premarketPlanWindowMinutes &&
           this.state.lastPremarketPlanDayEt !== etDay;
 
         if (shouldPlan) {
@@ -951,8 +964,19 @@ export class MahoragaHarness extends DurableObject<Env> {
       }
 
       if (clock.is_open) {
+        const lastKnownOpenMs = this.state.lastKnownNextOpenMs;
+        const hasOpenMs = typeof lastKnownOpenMs === "number" && Number.isFinite(lastKnownOpenMs);
+        const openWindowMs = marketOpenExecuteWindowMinutes * 60_000;
+        const withinOpenWindow =
+          hasOpenMs &&
+          openWindowMs >= 0 &&
+          clockNowMs >= lastKnownOpenMs &&
+          clockNowMs - lastKnownOpenMs <= openWindowMs;
         const marketJustOpened = clock.is_open && !this.state.lastClockIsOpen;
-        if (marketJustOpened && this.state.premarketPlan) {
+
+        const shouldExecutePremarketPlan =
+          !!this.state.premarketPlan && ((hasOpenMs && withinOpenWindow) || (!hasOpenMs && marketJustOpened));
+        if (shouldExecutePremarketPlan) {
           await this.executePremarketPlan();
         }
 
@@ -3194,8 +3218,10 @@ Response format:
   // ============================================================================
   // SECTION 10: PRE-MARKET ANALYSIS
   // ============================================================================
-  // Runs 9:25-9:29 AM ET to prepare a trading plan before market open.
-  // Executes the plan at 9:30-9:32 AM when market opens.
+  // Runs in the minutes leading into market open to prepare a trading plan.
+  // Tuned via config:
+  // - premarket_plan_window_minutes (default: 5)
+  // - market_open_execute_window_minutes (default: 2)
   //
   // Note: market-open and premarket detection is driven by Alpaca clock in alarm().
   // [TUNE] Plan staleness (PLAN_STALE_MS) in executePremarketPlan()
@@ -3242,8 +3268,13 @@ Response format:
   private async executePremarketPlan(): Promise<void> {
     const PLAN_STALE_MS = 600_000;
 
-    if (!this.state.premarketPlan || Date.now() - this.state.premarketPlan.timestamp > PLAN_STALE_MS) {
-      this.log("System", "no_premarket_plan", { reason: "Plan missing or stale" });
+    if (!this.state.premarketPlan) {
+      this.log("System", "no_premarket_plan", { reason: "Plan missing" });
+      return;
+    }
+    if (Date.now() - this.state.premarketPlan.timestamp > PLAN_STALE_MS) {
+      this.log("System", "no_premarket_plan", { reason: "Plan stale" });
+      this.state.premarketPlan = null;
       return;
     }
 
