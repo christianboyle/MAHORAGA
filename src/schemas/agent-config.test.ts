@@ -129,6 +129,24 @@ describe("AgentConfigSchema", () => {
       expect(result.success).toBe(false);
     });
 
+    it("rejects premarket_plan_window_minutes outside 1-60", () => {
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), premarket_plan_window_minutes: 0 }).success).toBe(
+        false
+      );
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), premarket_plan_window_minutes: 61 }).success).toBe(
+        false
+      );
+    });
+
+    it("rejects market_open_execute_window_minutes outside 0-10", () => {
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), market_open_execute_window_minutes: -1 }).success).toBe(
+        false
+      );
+      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), market_open_execute_window_minutes: 11 }).success).toBe(
+        false
+      );
+    });
+
     it("rejects stop_loss_pct over 50", () => {
       const config = { ...createValidConfig(), stop_loss_pct: 75 };
       const result = AgentConfigSchema.safeParse(config);

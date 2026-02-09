@@ -186,7 +186,7 @@ export function SettingsModal({ config, onSave, onClose }: SettingsModalProps) {
                 <input
                   type="number"
                   step="1"
-                  min="0"
+                  min="1"
                   className="hud-input w-full"
                   value={localConfig.premarket_plan_window_minutes ?? 5}
                   onChange={e => handleChange('premarket_plan_window_minutes', Number(e.target.value))}
