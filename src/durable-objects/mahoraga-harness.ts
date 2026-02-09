@@ -955,17 +955,26 @@ export class MahoragaHarness extends DurableObject<Env> {
         this.state.lastDataGatherRun = now;
       }
 
-      if (now - this.state.lastResearchRun >= RESEARCH_INTERVAL_MS) {
-        await this.researchTopSignals(5);
-        this.state.lastResearchRun = now;
-      }
+	      if (now - this.state.lastResearchRun >= RESEARCH_INTERVAL_MS) {
+	        await this.researchTopSignals(5);
+	        this.state.lastResearchRun = now;
+	      }
 
-      if (!clock.is_open && !this.state.premarketPlan) {
-        const minutesToOpen = nextOpenValid ? (nextOpenMs - clockNowMs) / 60000 : Number.POSITIVE_INFINITY;
-        const shouldPlan =
-          minutesToOpen > 0 &&
-          minutesToOpen <= premarketPlanWindowMinutes &&
-          this.state.lastPremarketPlanDayEt !== etDay;
+	      if (this.state.premarketPlan && this.state.lastPremarketPlanDayEt && this.state.lastPremarketPlanDayEt !== etDay) {
+	        this.log("System", "clearing_stale_premarket_plan", {
+	          stale_day: this.state.lastPremarketPlanDayEt,
+	          current_day: etDay,
+	        });
+	        this.state.premarketPlan = null;
+	        this.state.lastPremarketPlanDayEt = null;
+	      }
+
+	      if (!clock.is_open && !this.state.premarketPlan) {
+	        const minutesToOpen = nextOpenValid ? (nextOpenMs - clockNowMs) / 60000 : Number.POSITIVE_INFINITY;
+	        const shouldPlan =
+	          minutesToOpen > 0 &&
+	          minutesToOpen <= premarketPlanWindowMinutes &&
+	          this.state.lastPremarketPlanDayEt !== etDay;
 
         if (shouldPlan) {
           await this.runPreMarketAnalysis();
@@ -996,13 +1005,13 @@ export class MahoragaHarness extends DurableObject<Env> {
         // Fallback behavior: if we don't have an open timestamp (e.g., first tick after a deploy/migration),
         // avoid using a potentially-wrong edge detector. Instead:
         // - execute on the true "closed -> open" edge when we have prior state, or
-        // - if the prior state is unknown, allow a single attempt and rely on plan staleness to prevent late execution.
-        const shouldExecutePremarketPlan =
-          !!this.state.premarketPlan &&
-          ((hasOpenMs && withinOpenWindow) || (!hasOpenMs && marketJustOpened) || (!hasOpenMs && clockStateUnknown));
-        if (shouldExecutePremarketPlan) {
-          await this.executePremarketPlan();
-        }
+	        // - if the prior state is unknown, allow a single attempt and rely on plan staleness to prevent late execution.
+	        const shouldExecutePremarketPlan =
+	          !!this.state.premarketPlan &&
+	          ((hasOpenMs && withinOpenWindow) || marketJustOpened || (!hasOpenMs && clockStateUnknown));
+	        if (shouldExecutePremarketPlan) {
+	          await this.executePremarketPlan();
+	        }
 
         if (now - this.state.lastAnalystRun >= this.state.config.analyst_interval_ms) {
           await this.runAnalyst();
