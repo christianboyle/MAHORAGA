@@ -28,6 +28,7 @@ export const AgentConfigSchema = z
     llm_provider: z.enum(["openai-raw", "ai-sdk", "cloudflare-gateway"]),
     llm_model: z.string().min(1),
     llm_analyst_model: z.string().min(1),
+    llm_min_hold_minutes: z.number().min(0).max(1440),
 
     options_enabled: z.boolean(),
     options_min_confidence: z.number().min(0).max(1),
@@ -48,6 +49,7 @@ export const AgentConfigSchema = z
     crypto_stop_loss_pct: z.number().min(1).max(50),
 
     ticker_blacklist: z.array(z.string()),
+    allowed_exchanges: z.array(z.string()),
   })
   .refine((data) => data.options_min_delta < data.options_max_delta, {
     message: "options_min_delta must be less than options_max_delta",

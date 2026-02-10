@@ -24,6 +24,7 @@ function createValidConfig() {
     llm_provider: "openai-raw" as const,
     llm_model: "gpt-4o-mini",
     llm_analyst_model: "gpt-4o",
+    llm_min_hold_minutes: 30,
     options_enabled: false,
     options_min_confidence: 0.8,
     options_max_pct_per_trade: 0.02,
@@ -41,6 +42,7 @@ function createValidConfig() {
     crypto_take_profit_pct: 15,
     crypto_stop_loss_pct: 10,
     ticker_blacklist: [],
+    allowed_exchanges: ["NYSE", "NASDAQ", "ARCA", "AMEX", "BATS"],
   };
 }
 
@@ -139,12 +141,12 @@ describe("AgentConfigSchema", () => {
     });
 
     it("rejects market_open_execute_window_minutes outside 0-10", () => {
-      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), market_open_execute_window_minutes: -1 }).success).toBe(
-        false
-      );
-      expect(AgentConfigSchema.safeParse({ ...createValidConfig(), market_open_execute_window_minutes: 11 }).success).toBe(
-        false
-      );
+      expect(
+        AgentConfigSchema.safeParse({ ...createValidConfig(), market_open_execute_window_minutes: -1 }).success
+      ).toBe(false);
+      expect(
+        AgentConfigSchema.safeParse({ ...createValidConfig(), market_open_execute_window_minutes: 11 }).success
+      ).toBe(false);
     });
 
     it("rejects stop_loss_pct over 50", () => {
