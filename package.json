@@ -8,6 +8,8 @@
     "build": "tsc",
     "deploy": "wrangler deploy",
     "deploy:production": "wrangler deploy --env production",
+    "deploy:dashboard": "cd dashboard && npm run build && npx wrangler pages deploy dist --project-name=mahoraga-dashboard",
+    "deploy:all": "npm run deploy && npm run deploy:dashboard",
     "db:migrate": "wrangler d1 migrations apply mahoraga-db --local",
     "db:migrate:remote": "wrangler d1 migrations apply mahoraga-db --remote",
     "db:studio": "wrangler d1 execute mahoraga-db --local --command 'SELECT 1'",
