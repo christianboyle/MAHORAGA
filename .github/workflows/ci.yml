@@ -36,6 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    environment: Production
 
     steps:
       - name: Checkout
